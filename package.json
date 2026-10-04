@@ -1,0 +1,14 @@
+{
+  "name": "vowdisplay",
+  "version": "1.0.0",
+  "description": "Wedding welcome display design, approval, scheduling and safe field distribution",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

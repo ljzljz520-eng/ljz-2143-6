@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VowDisplay 婚礼迎宾发布台</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+<header>
+  <h1>VowDisplay 婚礼迎宾发布台</h1>
+  <a href="/display" target="_blank">现场窗口</a>
+  <span class="small">照片焦点、暗化、字幕位置、字体与设备清单按同一不可变版本发布</span>
+</header>
+<main class="grid">
+  <section class="card col-3">
+    <h2>1. 活动身份</h2>
+    <label>活动名称</label><input id="eventName" placeholder="2026-10-04 宴会厅婚礼" />
+    <label>新人姓名</label><input id="coupleName" placeholder="张晓明 × Élodie" />
+    <div class="row" style="margin-top:10px"><button class="primary" id="createEvent">创建活动</button></div>
+    <label>选择活动</label><select id="eventSelect"></select>
+    <div id="eventMeta" class="small"></div>
+  </section>
+
+  <section class="card col-5">
+    <h2>2. 场地、屏幕组与设备清单</h2>
+    <div class="row">
+      <div style="flex:1"><label>屏幕组（厅）名</label><input id="groupName" placeholder="水晶厅主屏组" /></div>
+      <div style="flex:1"><label>宴会厅名称（可多语）</label><input id="hallName" placeholder="水晶厅 / Crystal Hall" /></div>
+      <button id="createGroup" style="margin-top:22px">建组</button>
+    </div>
+    <div class="row">
+      <div style="flex:1"><label>设备名称</label><input id="deviceName" placeholder="厅外竖屏 A" /></div>
+      <div style="flex:1"><label>绑定屏幕组</label><select id="deviceGroup"></select></div>
+      <button id="createDevice" style="margin-top:22px">登记设备</button>
+    </div>
+    <div class="scroll"><table><thead><tr><th>设备</th><th>厅组</th><th>状态</th><th>现场配对码</th></tr></thead><tbody id="deviceRows"></tbody></table></div>
+    <p class="small">设备先在管理端明确绑定活动与厅组；现场仅能用配对码领取令牌，不能自选活动，避免并行会场串片。</p>
+  </section>
+
+  <section class="card col-4">
+    <h2>3. 素材授权</h2>
+    <input type="file" id="assetFile" accept="image/png,image/jpeg,image/webp,font/woff,font/woff2,font/ttf,font/otf" />
+    <label>授权来源 / 范围</label><input id="licenseSource" placeholder="新人书面授权 / 本活动现场展示" />
+    <label>授权截止</label><input id="licenseUntil" type="datetime-local" />
+    <div class="checkline"><input id="licenseConfirm" type="checkbox" /> <label style="margin:0">已确认可用于本活动现场展示</label></div>
+    <button id="uploadAsset">上传素材</button>
+    <div class="scroll"><table><thead><tr><th>素材</th><th>类型</th><th>授权</th><th>状态</th></tr></thead><tbody id="assetRows"></tbody></table></div>
+  </section>
+
+  <section class="card col-7">
+    <h2>4. 多语文案与视觉版本</h2>
+    <div class="grid">
+      <div class="col-6">
+        <label>照片</label><select id="photoAsset"></select>
+        <div class="row">
+          <div style="flex:1">焦点 X <input data-range="focusX" type="range" min="0" max="100" value="50" /></div>
+          <div style="flex:1">焦点 Y <input data-range="focusY" type="range" min="0" max="100" value="50" /></div>
+          <div style="flex:1">暗化% <input data-range="dim" type="range" min="0" max="90" value="35" /></div>
+        </div>
+        <div class="row">
+          <div style="flex:1">字幕 X% <input data-range="captionX" type="range" min="5" max="95" value="50" /></div>
+          <div style="flex:1">字幕 Y% <input data-range="captionY" type="range" min="5" max="95" value="72" /></div>
+          <div style="flex:1">安全边距 <input id="safeMargin" type="number" value="64" min="0" max="240" /></div>
+        </div>
+        <label>嵌入字体</label><select id="fontAssets" multiple size="3"></select>
+        <div class="row">
+          <div style="flex:1"><label>模式</label><select id="fontMode"><option value="embedded">嵌入资源包（默认）</option><option value="fallback">现场字体回退（需确认差异）</option></select></div>
+          <div style="flex:1"><label>字体族名</label><input id="fontFamily" value="VowDisplay Serif" /></div>
+          <div style="flex:1"><label>回退栈</label><input id="fallbackFamily" value="system-ui, 'Noto Sans CJK SC', sans-serif" /></div>
+        </div>
+      </div>
+      <div class="col-6">
+        <div class="spread"><h3>多语幻灯片</h3><button id="addSlide">新增语言</button></div>
+        <div id="slides"></div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="runCheck" class="primary">运行嵌入字体/现场回退排版比对</button>
+      <label class="checkline" style="margin:0"><input id="ackFallback" type="checkbox" disabled /> 我已校对换行、字形、安全边距差异</label>
+      <span id="typoSummary"></span>
+    </div>
+    <div id="typoReport"></div>
+  </section>
+
+  <section class="card col-5">
+    <h2>浏览器预览</h2>
+    <div class="canvasWrap"><canvas id="previewCanvas" width="1280" height="720"></canvas></div>
+    <div class="row" style="margin-top:10px"><label class="checkline"><input id="safeToggle" type="checkbox" checked />显示安全边距</label><select id="previewSlide"></select></div>
+  </section>
+
+  <section class="card col-12">
+    <h2>5. 发布：绑定活动身份与明确设备清单</h2>
+    <div class="row">
+      <select id="publishGroup" style="max-width:280px"></select>
+      <div style="flex:1" class="scroll"><div id="publishDevices"></div></div>
+      <input id="scheduledFor" type="datetime-local" style="max-width:230px" title="留空立即发布" />
+      <button id="publish" class="primary">原子发布/定时</button>
+    </div>
+    <div id="resourceGate" class="banner warn">尚未创建版本：照片、字体和排版报告必须齐备。</div>
+    <div class="scroll"><table><thead><tr><th>发布</th><th>厅</th><th>状态</th><th>设备对齐 / 断网</th><th>时间</th><th>操作</th></tr></thead><tbody id="releaseRows"></tbody></table></div>
+  </section>
+
+  <section class="card col-7">
+    <h2>6. 现场截图校对与回退</h2>
+    <div id="screenshots"></div>
+  </section>
+
+  <section class="card col-5">
+    <h2>7. 授权撤销与保留清理</h2>
+    <button id="revokeSelected" class="danger">撤销所选照片/字体授权并自动安全回退</button>
+    <hr />
+    <button id="cleanup" class="danger">活动结束：清理缓存正文</button>
+    <p class="small">服务器立即删除照片/字体/截图正文；在线终端收到清除指令并回传可核验清单。离线终端只显示“待擦除”，不会虚报完成。保留授权元数据、版本校验和操作凭据，不含照片正文。</p>
+    <div class="scroll"><table><thead><tr><th>操作</th><th>对象</th><th>时间</th><th>凭据</th></tr></thead><tbody id="auditRows"></tbody></table></div>
+  </section>
+</main>
+<script src="/static/render-core.js"></script>
+<script src="/static/admin.js"></script>
+</body>
+</html>
