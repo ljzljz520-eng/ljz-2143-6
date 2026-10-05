@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>C 现场全屏迎宾屏</title>
+<style>
+html,body{margin:0;height:100%;background:#090809;color:white;font-family:system-ui,sans-serif;overflow:hidden}
+#stage{position:fixed;inset:0;width:100vw;height:100vh;background:#111}
+#hud{position:fixed;left:18px;top:18px;z-index:10;background:rgba(0,0,0,.68);padding:14px 16px;border:1px solid #444;border-radius:12px;min-width:310px;font-size:14px}
+#hud.hidden{display:none}input,button{font:inherit;padding:8px;border-radius:8px}button{cursor:pointer}
+#log{margin-top:8px;max-height:190px;overflow:auto;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#cde}.small{opacity:.75;font-size:12px;margin-top:6px}
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="hud">
+  <b>C 现场窗口 / Fullscreen Display</b>
+  <div class="small">输入设备令牌，或注册新屏。发布身份不匹配时不会下载或切换。</div>
+  <div style="margin:8px 0"><input id="tokenInput" style="width:220px" placeholder="device token"><button id="connect">连接</button><button id="register">注册新屏</button></div>
+  <button id="fullscreen">进入全屏</button><button id="capture">上传现场截图</button>
+  <div id="status" class="small">未连接</div><div id="log"></div>
+</div>
+<script type="module">
+import { renderSlide, familyDeclaration, localized } from './layout-core.js?v=1';
+const $=s=>document.querySelector(s);
+const canvas=$('#stage'),ctx=canvas.getContext('2d');
+const DB_NAME='wedding-display-v1';
+let deviceToken=localStorage.getItem('deviceToken')||'';
+let active=null, assets=new Map(), images=new Map(), pollTimer=null, slideIndex=0, rotationTimer=null;
+function log(...a){const el=$('#log');const d=document.createElement('div');d.textContent=`${new Date().toLocaleTimeString()} ${a.join(' ')}`;el.prepend(d)}
+function setStatus(s){$('#status').textContent=s;log(s)}
+function openDb(){return new Promise((resolve,reject)=>{const q=indexedDB.open(DB_NAME,1);q.onupgradeneeded=()=>{const db=q.result;db.createObjectStore('assets',{keyPath:'sha256'});db.createObjectStore('state',{keyPath:'key'});};q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error)})}
+async function idbPut(store,value){const db=await openDb();await new Promise((res,rej)=>{const tx=db.transaction(store,'readwrite');tx.objectStore(store).put(value);tx.oncomplete=res;tx.onerror=()=>rej(tx.error)})}
+async function idbGet(store,key){const db=await openDb();return new Promise((res,rej)=>{const r=db.transaction(store).objectStore(store).get(key);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
+async function idbDelete(store,key){const db=await openDb();await new Promise((res,rej)=>{const tx=db.transaction(store,'readwrite');tx.objectStore(store).delete(key);tx.oncomplete=res;tx.onerror=()=>rej(tx.error)})}
+async function idbClear(store){const db=await openDb();await new Promise((res,rej)=>{const tx=db.transaction(store,'readwrite');tx.objectStore(store).clear();tx.oncomplete=res;tx.onerror=()=>rej(tx.error)})}
+async function api(path,options={}){const r=await fetch(path,{...options,headers:{...(options.headers||{}),'X-Device-Token':deviceToken,'Content-Type':'application/json'}});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||`HTTP ${r.status}`);return j}
+function bufferToSha(buf){return crypto.subtle.digest('SHA-256',buf).then(x=>[...new Uint8Array(x)].map(b=>b.toString(16).padStart(2,'0')).join(''))}
+async function loadImage(blob){const url=URL.createObjectURL(blob);try{return await new Promise((res,rej)=>{const im=new Image();im.onload=()=>res(im);im.onerror=rej;im.src=url})}finally{setTimeout(()=>URL.revokeObjectURL(url),5000)}}
+async function ensureFont(buf){const face=new FontFace('WeddingEmbedded',buf,{style:'normal',weight:'400'});await face.load();document.fonts.add(face)}
+async function downloadVersion(versionId){
+  setStatus(`请求版本清单 ${versionId}`);
+  const manifest=await api(`/api/device/manifest/${versionId}`);
+  await api('/api/device/version-state',{method:'POST',body:JSON.stringify({versionId,state:'preloading'})});
+  const downloaded=[];
+  for(const item of manifest.assets){
+    let rec=await idbGet('assets',item.sha256);
+    if(!rec){
+      const r=await fetch(`/api/device/asset/${item.sha256}?version=${versionId}`,{headers:{'X-Device-Token':deviceToken}});
+      if(!r.ok)throw new Error(`素材 ${item.filename} 下载失败`);
+      const buf=await r.arrayBuffer(); const hash=await bufferToSha(buf);
+      if(hash!==item.sha256)throw new Error(`素材哈希不一致 ${item.filename}`);
+      rec={sha256:item.sha256,type:item.type,mime_type:item.mime_type,blob:new Blob([buf],{type:item.mime_type}),licenseVersion:item.license_version};
+      await idbPut('assets',rec);
+    }
+    if(rec.type==='font')await ensureFont(rec.blob);
+    if(rec.type==='photo')assets.set(item.sha256,rec);
+    downloaded.push(item.sha256);
+  }
+  await api('/api/device/version-state',{method:'POST',body:JSON.stringify({versionId,state:'ready'})});
+  return {manifest,downloaded};
+}
+async function activate(versionId,manifest,downloaded){
+  const metrics=await renderMetrics(manifest);
+  await api('/api/device/version-state',{method:'POST',body:JSON.stringify({versionId,state:'active',metrics:{...metrics,downloaded,hashVerified:true,eventId:manifest.event.id}})});
+  active=manifest; await idbPut('state',{key:'active',manifest});slideIndex=0;
+  setStatus(`已原子切换：${manifest.version.label}`);startRotation();
+  for(let i=0;i<manifest.design.slides.length;i++)await uploadProof(versionId,i,'synthetic',metrics);
+}
+async function renderMetrics(manifest){
+  await prepareImages(manifest); const test=document.createElement('canvas').getContext('2d'); const blocks=[];
+  for(const [i,s] of manifest.design.slides.entries()){
+    test.font=`700 96px ${familyDeclaration(manifest.checks.font_embedded)}`;
+    for(const language of (manifest.design.languages||['zh-CN']))for(const field of ['name','subtitle','hall']){
+      const text=localized(s[field],language,manifest.design.languages[0]);
+      blocks.push({slide:i,language,field,text,width:test.measureText(text).width,glyphWarning:false});
+    }
+  }
+  return {width:canvas.width,height:canvas.height,languages:manifest.design.languages,blocks,fontEmbedded:manifest.checks.font_embedded,fontChecks:await document.fonts.check('700 96px WeddingEmbedded'),safeMargin:manifest.design.canvas};
+}
+async function prepareImages(manifest){images=new Map();for(const s of manifest.design.slides){const item=manifest.assets.find(a=>a.id===s.photoAssetId);if(!item)throw new Error('清单照片缺失');const rec=assets.get(item.sha256)||await idbGet('assets',item.sha256);if(!rec)throw new Error('本地照片缺失');images.set(s.id,await loadImage(rec.blob))}}
+function resize(){canvas.width=window.innerWidth;canvas.height=window.innerHeight}
+window.addEventListener('resize',resize);resize();
+function draw(){if(!active){ctx.fillStyle='#090809';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.fillStyle='#bbb';ctx.font='40px sans-serif';ctx.textAlign='center';ctx.fillText('等待已授权的完整版本…',canvas.width/2,canvas.height/2);return}const slide=active.design.slides[slideIndex];renderSlide(ctx,slide,images.get(slide.id),{},{width:canvas.width,height:canvas.height,language:active.design.languages[0],fallbackLanguage:active.design.languages[0],embedded:active.checks.font_embedded,safeMarginX:active.design.canvas.safeMarginX,safeMarginY:active.design.canvas.safeMarginY,showSafeArea:new URL(location.href).searchParams.get('safe')==='1'})}
+function startRotation(){clearInterval(rotationTimer);rotationTimer=setInterval(()=>{slideIndex=(slideIndex+1)%active.design.slides.length;draw()},12000);draw()}
+async function proofBlob(index){const c=document.createElement('canvas');c.width=1920;c.height=1080;const cc=c.getContext('2d');const s=active.design.slides[index];renderSlide(cc,s,images.get(s.id),{},{width:1920,height:1080,language:active.design.languages[0],fallbackLanguage:active.design.languages[0],embedded:active.checks.font_embedded,safeMarginX:active.design.canvas.safeMarginX,safeMarginY:active.design.canvas.safeMarginY,showSafeArea:true});return await new Promise(res=>c.toBlob(res,'image/png'))}
+async function uploadProof(versionId,index,kind='synthetic',baseMetrics={}){const blob=await proofBlob(index);const buf=await blob.arrayBuffer();const sha=await bufferToSha(buf);const dataBase64=btoa(String.fromCharCode(...new Uint8Array(buf)));await api('/api/device/proof',{method:'POST',body:JSON.stringify({versionId,slideIndex:index,kind,dataBase64,metrics:{...baseMetrics,width:1920,height:1080,proofSha:sha,autoStatus:'pending'}})});setStatus(`校对证据已上传 ${index+1}`)}
+async function wipe(cmd){const deleted=[],notDeleted=[];try{if(cmd.scope==='all'||cmd.scope==='event'){await idbClear('assets');deleted.push('assets');await idbClear('state');deleted.push('state');assets.clear();images.clear();active=null;draw()}else if(cmd.assetSha){await idbDelete('assets',cmd.assetSha);deleted.push(cmd.assetSha);if(active&&active.assets.some(a=>a.sha256===cmd.assetSha)){active=null;await idbDelete('state','active');draw()}}else if(cmd.versionId){deleted.push(cmd.versionId)}const claim=JSON.stringify({taskId:cmd.taskId,scope:cmd.scope,eventId:cmd.eventId,assetSha:cmd.assetSha||null,versionId:cmd.versionId||null,deleted,time:new Date().toISOString(),deviceHash:deviceToken.slice(0,16),store:'indexeddb:wedding-display-v1'});const proofSha=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(claim)))].map(b=>b.toString(16).padStart(2,'0')).join('');await api('/api/device/wipe-report',{method:'POST',body:JSON.stringify({taskId:cmd.taskId,status:'deleted',deleted,proofSha,note:'local IndexedDB records removed'})});setStatus(`擦除已确认：${deleted.join(',')}`)}catch(e){await api('/api/device/wipe-report',{method:'POST',body:JSON.stringify({taskId:cmd.taskId,status:'failed',notDeleted:[String(e)],note:String(e)})}).catch(()=>{});throw e}}
+async function poll(){try{const j=await api('/api/device/commands');if(j.activeVersionId&&(!active||active.version.id!==j.activeVersionId)){const m=await idbGet('state','active');if(m?.manifest?.version?.id===j.activeVersionId){active=m.manifest;await prepareImages(active);startRotation()}}for(const cmd of j.commands){if(cmd.type==='safe-screen'){active=null;await idbDelete('state','active');draw();setStatus(cmd.reason||'授权保护：安全屏')}else if(cmd.type==='wipe')await wipe(cmd);else if(cmd.type==='preload')await downloadVersion(cmd.versionId).catch(e=>setStatus('预载失败：'+e.message));else if(cmd.type==='prepare-and-activate'){const r=await downloadVersion(cmd.versionId);await activate(cmd.versionId,r.manifest,r.downloaded)}else if(cmd.type==='activate'&&cmd.versionId==='SAFE_SCREEN'){active=null;await idbDelete('state','active');draw();setStatus('授权保护：切换安全屏')}else if(cmd.type==='activate'&&cmd.versionId!=='SAFE_SCREEN'){const r=await downloadVersion(cmd.versionId);await activate(cmd.versionId,r.manifest,r.downloaded)}}}catch(e){setStatus('离线或同步失败：'+e.message)}}
+$('#connect').onclick=()=>{deviceToken=$('#tokenInput').value.trim();localStorage.setItem('deviceToken',deviceToken);if(deviceToken){clearInterval(pollTimer);poll();pollTimer=setInterval(poll,8000)}};
+$('#register').onclick=async()=>{const j=await fetch('/api/device/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'现场屏',hall:'临时注册',resolution:screen.width+'x'+screen.height})}).then(r=>r.json());deviceToken=j.device_token;$('#tokenInput').value=deviceToken;localStorage.setItem('deviceToken',deviceToken);setStatus('已注册，请在管理页绑定活动');poll();pollTimer=setInterval(poll,8000)};
+$('#fullscreen').onclick=()=>document.documentElement.requestFullscreen?.();
+$('#capture').onclick=async()=>{if(!active)return setStatus('没有可校对的版本');try{const stream=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:1}});const track=stream.getVideoTracks()[0];const vid=document.createElement('video');vid.srcObject=stream;await vid.play();const c=document.createElement('canvas');c.width=1920;c.height=1080;c.getContext('2d').drawImage(vid,0,0,c.width,c.height);track.stop();const blob=await new Promise(r=>c.toBlob(r,'image/png'));const buf=await blob.arrayBuffer();const hash=await bufferToSha(buf);await api('/api/device/proof',{method:'POST',body:JSON.stringify({versionId:active.version.id,slideIndex,kind:'screenshot',dataBase64:btoa(String.fromCharCode(...new Uint8Array(buf))),metrics:{width:c.width,height:c.height,proofSha:hash}})});setStatus('现场截图已上传')}catch(e){setStatus('现场截图取消，改点生成合成校对');await uploadProof(active.version.id,slideIndex,'synthetic',{width:1920,height:1080})}};
+if(deviceToken){$('#tokenInput').value=deviceToken;poll();pollTimer=setInterval(poll,8000)}
+setInterval(draw,1000);draw();
+</script>
+</body></html>

@@ -1,0 +1,16 @@
+{
+  "name": "wedding-welcome-station",
+  "version": "1.0.0",
+  "description": "Multi-venue wedding welcome board design, scheduling and audit-safe display system",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "bash test/run-e2e.sh"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.4.1",
+    "express": "^4.21.2",
+    "opentype.js": "^1.3.4"
+  }
+}
